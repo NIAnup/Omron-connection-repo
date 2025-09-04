@@ -1,0 +1,65 @@
+class OmronService {
+  static const MethodChannel _channel = MethodChannel('omron_channel');
+
+  /// Sets the user hash ID for the Omron SDK.
+  static Future setUserHashId(String userHashId) async {
+    final result = await _channel.invokeMethod('setUserHashId', userHashId);
+    return result;
+  }
+
+  /// Returns list of device info maps: [{name: ..., identifier: ...}]
+  static Future<List<Map<String, dynamic>>> scanDevices() async {
+    final List<dynamic> devices = await _channel.invokeMethod('startScan');
+    return devices.cast<Map<dynamic, dynamic>>().map((e) => Map<String, dynamic>.from(e)).toList();
+  }
+
+  /// Connects to a device with the given identifier and user settings.
+  /// userSettings should be a map like: {'height': '18000', 'gender': 'Male', 'dateOfBirth': '19900101'}
+  static Future<String> connectToDevice(String identifier, {Map<String, dynamic>? userSettings}) async {
+    kDebugPrint("connectToDevice to $identifier");
+    kDebugPrint("connectToDevice to $userSettings");
+
+    final result = await _channel.invokeMethod('connectDevice', {
+      'identifier': identifier,
+      'userSettings': userSettings ?? {},
+    });
+    kDebugPrint("connectToDevice result $result");
+
+    return result as String;
+  }
+
+  /// Placeholder for sending user profile if needed as a separate operation.
+  static Future<String> sendUserProfile() async {
+    // This method would need corresponding native implementation if required.
+    // For now, user settings are passed during connectToDevice.
+    return Future.value("Not implemented as a separate call. User profile sent with connectToDevice.");
+  }
+
+  static Future<Map<String, dynamic>> getData() async {
+    final result = await _channel.invokeMethod('transferData');
+    return Map<String, dynamic>.from(result as Map);
+  }
+
+  static Future<List<Map<String, String>>> forautoscanDevices() async {
+    final List devices = await _channel.invokeMethod('startScan');
+    return devices.cast<Map>().map((e) => Map<String, String>.from(e)).toList();
+  }
+
+
+  static Future<String> autoconnectToDevice(String identifier, {Map<String, dynamic>? userSettings}) async {
+      final result = await _channel.invokeMethod('connectDevice', {
+        'identifier': identifier,
+        'userSettings': userSettings ?? {},
+      });
+      return result;
+    }
+
+  static Future<String> autoConnectLastDevice() async {
+    try {
+      final result = await _channel.invokeMethod('autoConnectLastDevice');
+      return result;
+    } catch (e) {
+      return 'Auto-connect failed: $e';
+    }
+  }
+}
