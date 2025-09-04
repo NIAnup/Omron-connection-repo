@@ -1,0 +1,378 @@
+ Future<void> checkPermissions() async {
+    await [
+      Permission.bluetooth,
+      Permission.bluetoothScan,
+      Permission.bluetoothConnect,
+      Permission.location,
+    ].request();
+  }
+
+  /// Check current service states
+  Future<void> checkServices() async {
+    // Bluetooth
+    final btState = await FlutterBluePlus.adapterState.first;
+    bluetoothOn.value = (btState == BluetoothAdapterState.on);
+
+    // Location
+    final locationEnabled = await Geolocator.isLocationServiceEnabled();
+    locationOn.value = locationEnabled;
+  }
+
+  /// Listen continuously for Bluetooth state
+  void listenBluetooth() {
+    kDebugPrint('Listening for Bluetooth state...');
+    FlutterBluePlus.adapterState.listen((state) {
+      bluetoothOn.value = (state == BluetoothAdapterState.on);
+      _autoCloseDialogIfFixed();
+    });
+  }
+
+  /// Refresh Location state manually
+  Future<void> refreshLocation() async {
+    final locationEnabled = await Geolocator.isLocationServiceEnabled();
+    locationOn.value = locationEnabled;
+    _autoCloseDialogIfFixed();
+  }
+
+  /// Try to enable Bluetooth (Android only)
+  void enableBluetooth() {
+    FlutterBluePlus.turnOn();
+  }
+
+  /// Open system Location settings
+  void openLocationSettings() {
+    Geolocator.openLocationSettings();
+  }
+
+  /// Auto close dialog when both services are ON
+  void _autoCloseDialogIfFixed() {
+    if (bluetoothOn.value && Get.isDialogOpen == true) {
+      Get.back(); // close popup automatically
+    }
+  }
+  bool get allServicesEnabled => bluetoothOn.value && locationOn.value;
+
+  Future<void> loadSavedDevices() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedList = prefs.getStringList("paired_device_address") ?? [];
+
+    kDebugPrint("Saved devices: $savedList");
+
+      savedDevices.value = savedList;
+      if (savedList.isNotEmpty) {
+        status.value = "Loaded previously connected devices.";
+      }
+
+  }
+
+  // Future<void> startScan() async {
+  //   isScanning.value = true;
+  //   devices.clear();
+  //   status.value = 'Scanning...';
+  //   isMachineReady.value = false;
+  //   try {
+  //     final prefs = await SharedPreferences.getInstance();
+  //     final known = prefs.getString("paired_device_address");
+  //     final scannedDevices = await OmronService.scanDevices();
+  //
+  //     kDebugPrint("Scanned devices: $scannedDevices");
+  //     kDebugPrint("Known device: $known");
+  //
+  //     if (known != null) {
+  //       final auto = scannedDevices.firstWhere(
+  //             (d) => d['identifier'] == known,
+  //         orElse: () => {},
+  //       );
+  //       kDebugPrint("Auto connect device: $auto");
+  //       if (auto.isNotEmpty) {
+  //         await connectToDevice(auto['identifier']!);
+  //       }
+  //     }
+  //
+  //     devices.value = scannedDevices;
+  //     kDebugPrint("Scanned devices: $scannedDevices");
+  //
+  //     status.value = 'Scan complete. Found ${scannedDevices.length} devices.';
+  //   } catch (e) {
+  //     kDebugPrint("Error: $e");
+  //
+  //     status.value = 'Scan failed: $e';
+  //   } finally {
+  //     isScanning.value = false;
+  //   }
+  // }
+  Future<void> startScan() async {
+    status.value = "Scanning...";
+    devices.clear();
+    data.value = null;
+
+    try {
+
+
+      final scannedRaw = await OmronService.scanDevices();
+
+      // Ensure devices are in Map format
+      final scanned = scannedRaw.map<Map<String, dynamic>>((d) {
+        if (d is String) {
+          return {
+            "identifier": d,
+            "name": d,
+          };
+        }
+        return Map<String, dynamic>.from(d);
+      }).toList();
+
+      devices.value = scanned;
+      kDebugPrint("Scanned devices: $scanned");
+      kDebugPrint("Identifiers: ${scanned.map((d) => d["identifier"])}");
+
+
+
+      status.value = "Scan complete. Tap a device to connect.";
+    } catch (e) {
+      status.value = "Scan error: $e";
+      kDebugPrint("Scan error: $e");
+    }
+  }
+
+  int calculateHeightInCm({
+    required String heightUnit,
+    required String feet,
+    required String inches,
+    required String cm,
+  }) {
+    double totalCm = 0;
+
+    if (heightUnit == "Inches") {
+      final f = double.tryParse(feet) ?? 0;
+      final i = double.tryParse(inches) ?? 0;
+      totalCm = (f * 30.48) + (i * 2.54);
+    } else {
+      totalCm = double.tryParse(cm) ?? 0;
+    }
+
+     final result=(totalCm * 100).toInt(); // return as double
+   return result;
+  }
+
+  Future<void> connectToDevice(String identifier) async {
+    status.value = 'Connecting to $identifier...';
+    isMachineReady.value = false;
+    kDebugPrint("connectToDevice to");
+
+    try {
+      if (!validateUserSettings()) {
+        isMachineReady.value = false;
+      }
+      final height = calculateHeightInCm(
+              heightUnit: heightUnitSelected.value,
+              feet: heightFeetController.value,
+              inches: heightController.value,
+              cm: heightController.value,
+            );
+      final dob = DateFormat("yyyyMMdd").format(
+              DateFormat("dd-MM-yyyy").parse(dobController.text),
+            );
+      kDebugPrint("Height type: ${height.runtimeType}");
+      kDebugPrint("Gender type: ${genderController.value.runtimeType}");
+      kDebugPrint("DOB type: ${dobController.text.runtimeType}");
+
+      final userSettings = {
+        'height': height.toString(),
+        'gender': genderController.value,
+        'dateOfBirth': dob,
+      };
+
+
+      final Mstatus = await OmronService.connectToDevice(
+        identifier,
+        userSettings: userSettings,
+      );
+
+      kDebugPrint("Device connection response: $status");
+
+      status.value = Mstatus;
+
+      if (status.contains("Connected")) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setStringList("paired_device_address", [identifier]);
+      final data = await prefs.getStringList("paired_device_address");
+      kDebugPrint("paired_device_address: $data");
+        await prefs.setString("user_height", height.toString());
+        await prefs.setString("user_gender", genderController.value);
+        await prefs.setString("user_dob", dob);
+
+        isMachineReady.value = true;
+        // return true;
+      }
+      status.value = Mstatus;
+      if (status.contains('Connected')) {
+        isMachineReady.value = true;
+      }
+      // return true;
+    } catch (e) {
+      status.value = 'Connection failed: $e';
+      kDebugPrint("Connection error: $e");
+      isMachineReady.value = false;
+      // return false;
+    }
+  }
+  bool validateUserSettings() {
+    // Basic validation
+    final height = calculateHeightInCm(
+      heightUnit: heightUnitSelected.value,
+      feet: heightFeetController.value,
+      inches: heightController.value,
+      cm: heightController.value,
+    );
+
+    if (height == null || height < 10000 || height > 199500) { // Assuming 0.01 cm units, range 100.00-199.50 cm
+      Get.snackbar('Invalid Height', 'Height should be between 10000 and 19950 (e.g., 18000 for 180 cm)');
+      return false;
+    }
+    final gender = genderController.value.toLowerCase();
+    if (gender != 'male' && gender != 'female') {
+      Get.snackbar('Invalid Gender', 'Gender should be Male or Female');
+      return false;
+    }
+
+    final dob = DateFormat("yyyyMMdd").format(
+    DateFormat("dd-MM-yyyy").parse(dobController.text),
+    );
+    if (dob.length != 8 || int.tryParse(dob) == null) {
+      Get.snackbar('Invalid DOB', 'Date of Birth should be YYYYMMDD (e.g., 19900101)');
+      return false;
+    }
+    return true;
+  }
+
+
+  Future<void> autoConnect(String savedIdentifier) async {
+    kDebugPrint("Saved device identifier: $savedIdentifier");
+
+    if (savedIdentifier.isEmpty) {
+      status.value = "No saved device. Please connect manually once.";
+      isMachineReady.value = false;
+      // return;
+    }
+    if (!validateUserSettings()) {
+      isMachineReady.value = false;
+    }
+
+    final height = calculateHeightInCm(
+      heightUnit: heightUnitSelected.value,
+      feet: heightFeetController.value,
+      inches: heightController.value,
+      cm: heightController.value,
+    ); // ensure integer
+
+
+
+      final dob = DateFormat("yyyyMMdd").format(
+        DateFormat("dd-MM-yyyy").parse(dobController.text),
+      );
+
+
+    status.value = "Scanning for saved devices...";
+    final scannedDevices = await OmronService.forautoscanDevices();
+    kDebugPrint("Scanned devices: $scannedDevices");
+    //
+
+    final match = scannedDevices.firstWhere(
+          (d) => d['identifier']?.toString().trim().toLowerCase() ==
+          savedIdentifier.trim().toLowerCase(),
+      orElse: () => {},
+    );
+
+
+    if (match.isNotEmpty) {
+      final String deviceId = match['identifier'].toString();
+      status.value = "Connecting to $deviceId...";
+      kDebugPrint("Match found, connecting: $deviceId");
+      final userSettingsData = {
+        "height": height.toString(),
+        "gender":genderController.value,
+
+        "dateOfBirth": dob ,
+      };
+
+
+      try {
+        final machineStatus = await OmronService.autoconnectToDevice(
+          deviceId,
+          userSettings: userSettingsData,
+        );
+        status.value = machineStatus;
+        kDebugPrint("Device connection status: $machineStatus");
+        // isMachineReady.value = true;
+      } on PlatformException catch (e) {
+        status.value = "Pairing failed: ${e.message}";
+        kDebugPrint("Pairing error details: ${e.details}");
+      }
+        // kDebugPrint("Device connection status: $machineStatus");
+        //
+        // if (machineStatus.contains("Connected")) {
+        //   status.value = "Connected. Put device in O-mode to transfer data.";
+        //   isMachineReady.value = true;
+        // }
+
+    } else {
+      kDebugPrint("No match found");
+      status.value = "Saved device not found nearby. Check if it's powered on and in range.";
+    }
+  }
+
+
+
+
+
+
+  Future<bool> fetchData() async {
+    status.value = "Fetching data...";
+    data.value = null;
+
+    try {
+      log("📡 [fetchData] Calling OmronService.getData()...");
+      final result = await OmronService.getData();
+
+      debugPrint("✅ [fetchData] Data transfer completed: $result");
+      final List<dynamic>? weightRecords = result["vitalData"]?["OMRONVitalDataWeightKey"];
+
+      if (weightRecords == null || weightRecords.isEmpty) {
+        debugPrint("⚠️ [fetchData] No weight records found.");
+        status.value = "No measurement records found.";
+        return false;
+      }
+
+      // Loop over records and print key metrics
+      for (var record in weightRecords) {
+        debugPrint("👉 Record:");
+        debugPrint("   Weight: ${record["OMRONWeightKey"]}");
+        debugPrint("   Visceral Fat: ${record["OMRONWeightVisceralFatLevelKey"]}");
+        debugPrint("   BMI: ${record["OMRONWeightBMIKey"]}");
+        debugPrint("   Skeletal Muscle %: ${record["OMRONWeightSkeletalMusclePercentageKey"]}");
+        debugPrint("   Body Fat %: ${record["OMRONWeightBodyFatPercentageKey"]}");
+        debugPrint("   Resting Metabolism: ${record["OMRONWeightRestingMetabolismKey"]}");
+        debugPrint("   Body Age: ${record["OMRONWeightBodyAgeKey"]}");
+      }
+
+      data.value = result;
+      status.value = "Data fetched successfully.";
+      return true;
+
+    } catch (e) {
+      debugPrint("❌ [fetchData] Exception: $e");
+      status.value = "Fetch error: $e";
+      return false;
+    }
+  }
+
+
+  Future<void> clearSavedDevices() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove("paired_device_address");
+
+      savedDevices.value.clear();
+      status.value = "Saved devices cleared.";
+
+  }
