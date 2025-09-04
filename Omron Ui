@@ -1,0 +1,497 @@
+// omron_service.dart
+import 'package:flutter/services.dart';
+import 'package:flutter/material.dart';
+
+import '../utils/tools/debug_tools/debug_tools.dart';
+import 'package:permission_handler/permission_handler.dart';
+
+import 'dart:async';
+import 'package:flutter/services.dart';
+import 'dart:convert';
+import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:fl_chart/fl_chart.dart';
+
+import 'package:flutter/services.dart';
+
+
+
+import 'package:flutter/material.dart';
+import 'package:get/get.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter/services.dart';
+import 'dart:convert';
+import 'package:fl_chart/fl_chart.dart'; // Assuming it's needed, though not used yet - can be used for trends later
+
+import '../utils/tools/debug_tools/debug_tools.dart'; // Assuming this is for kDebugPrint
+
+class OmronService {
+  static const MethodChannel _channel = MethodChannel('omron_channel');
+
+  /// Sets the user hash ID for the Omron SDK.
+  static Future setUserHashId(String userHashId) async {
+   final result = await _channel.invokeMethod('setUserHashId', userHashId);
+   return result;
+  }
+
+  /// Returns list of device info maps: [{name: ..., identifier: ...}]
+  static Future<List<Map<String, dynamic>>> scanDevices() async {
+    final List<dynamic> devices = await _channel.invokeMethod('startScan');
+    return devices.cast<Map<dynamic, dynamic>>().map((e) => Map<String, dynamic>.from(e)).toList();
+  }
+
+  /// Connects to a device with the given identifier and user settings.
+  /// userSettings should be a map like: {'height': '18000', 'gender': 'Male', 'dateOfBirth': '19900101'}
+  static Future<String> connectToDevice(String identifier, {Map<String, dynamic>? userSettings}) async {
+    try {
+      kDebugPrint("connectToDevice to $identifier");
+      kDebugPrint("connectToDevice to $userSettings");
+      final result = await _channel.invokeMethod('connectDevice', {
+        'identifier': identifier,
+        'userSettings': userSettings ?? {},
+      });
+      return result as String;
+    } catch (e) {
+      throw 'Connection failed: $e';
+    }
+  }
+
+  /// Placeholder for sending user profile if needed as a separate operation.
+  static Future<String> sendUserProfile() async {
+    // This method would need corresponding native implementation if required.
+    // For now, user settings are passed during connectToDevice.
+    return Future.value("Not implemented as a separate call. User profile sent with connectToDevice.");
+  }
+
+  static Future<Map<String, dynamic>> getData() async {
+    final result = await _channel.invokeMethod('transferData');
+    return Map<String, dynamic>.from(result as Map);
+  }
+}
+
+class OmronController extends GetxController {
+
+  var devices = <Map<String, dynamic>>[].obs;
+  var connectionStatus = 'Disconnected'.obs;
+  var measurementData = <String, dynamic>{}.obs;
+  var isScanning = false.obs;
+  var isMachineReady = false.obs;
+
+  final userHashIdController = TextEditingController(text: 'testuser@wellnessz.com');
+  final heightController = TextEditingController(text: '18000');
+  final genderController = TextEditingController(text: 'Male');
+  final dobController = TextEditingController(text: '19960902');
+
+  @override
+  void onInit() {
+    super.onInit();
+    _requestPermissions();
+  }
+
+  Future<void> _requestPermissions() async {
+    // Request Bluetooth and Location permissions
+    var statuses = await [Permission.bluetoothScan, Permission.bluetoothConnect, Permission.locationWhenInUse].request();
+    if (statuses.values.any((status) => status.isDenied)) {
+      Get.snackbar('Permissions Required', 'Please grant Bluetooth and Location permissions to continue.');
+    }
+  }
+
+  Future<void> setUserHashId() async {
+    try {
+     final result = await OmronService.setUserHashId(userHashIdController.text);
+     kDebugPrint("setUserHashId result: $result");
+
+      Get.snackbar('Success', 'User Hash ID set successfully!');
+    } catch (e) {
+      Get.snackbar('Error', 'Failed to set User Hash ID: $e');
+    }
+  }
+
+  Future<void> startScan() async {
+    isScanning.value = true;
+    devices.clear();
+    connectionStatus.value = 'Scanning...';
+    isMachineReady.value = false;
+    try {
+      final height = 100.0;
+      final calculateHeight = (height * 100).toInt();
+      final outputheight = calculateHeight.toString();
+      kDebugPrint("Height: ${outputheight.runtimeType}");
+      final prefs = await SharedPreferences.getInstance();
+      final known = prefs.getString("paired_device_address");
+      final scannedDevices = await OmronService.scanDevices();
+
+
+      kDebugPrint("Scanned devices: $scannedDevices");
+      kDebugPrint("Known device: $known");
+
+      if (known != null) {
+        final auto = scannedDevices.firstWhere(
+              (d) => d['identifier'] == known,
+          orElse: () => {},
+        );
+        kDebugPrint("Auto connect device: $auto");
+        if (auto.isNotEmpty) {
+          await connectToDevice(auto['identifier']!);
+        }
+      }
+
+      devices.value = scannedDevices;
+      kDebugPrint("Scanned devices: $scannedDevices");
+
+      connectionStatus.value = 'Scan complete. Found ${scannedDevices.length} devices.';
+    } catch (e) {
+      kDebugPrint("Error: $e");
+
+      connectionStatus.value = 'Scan failed: $e';
+    } finally {
+      isScanning.value = false;
+    }
+  }
+
+  Future<void> autoConnect() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedIdentifier = prefs.getString("paired_device_address");
+    kDebugPrint("Saved identifier: $savedIdentifier");
+    if (savedIdentifier == null) {
+      connectionStatus.value = "No saved device. Please connect manually once.";
+      return;
+    }
+
+    connectionStatus.value = "Scanning for saved device...";
+    try {
+      final devices = await OmronService.scanDevices();
+      kDebugPrint("Scanned devices: $devices");
+      final match = devices.firstWhere(
+            (d) => d['identifier']?.toString().trim().toLowerCase() == savedIdentifier.trim().toLowerCase(),
+        orElse: () => {},
+      );
+      kDebugPrint("Matched device: $match");
+      if (match.isNotEmpty) {
+        connectionStatus.value = "Connecting to $savedIdentifier...";
+        final userSettings = {
+          "height": "180",
+          "gender": prefs.getString("user_gender") ?? "Male",
+          "dateOfBirth": prefs.getString("user_dob") ?? "19960902",
+        };
+        final status = await OmronService.connectToDevice(match["identifier"], userSettings: userSettings);
+        kDebugPrint("Connect status: $status");
+        if (status.contains("Connected")) {
+          connectionStatus.value = "Connected. Put device in O-mode to transfer data.";
+          isMachineReady.value = true;
+        }
+      } else {
+        connectionStatus.value = "Saved device not found. Ensure scale is powered on.";
+        Get.snackbar('Error', 'Saved device not found. Ensure scale is powered on and in range.');
+      }
+    } catch (e) {
+      kDebugPrint("Auto-connect error: $e");
+      connectionStatus.value = "Auto-connect failed: $e";
+      Get.snackbar('Error', 'Auto-connect failed: $e');
+    }
+  }
+
+  Future<void> connectToDevice(String identifier) async {
+    connectionStatus.value = 'Connecting to $identifier...';
+    isMachineReady.value = false;
+    try {
+      if (!validateUserSettings()) {
+        return;
+      }
+      kDebugPrint("type to ${heightController.text.runtimeType}");
+      kDebugPrint("type to ${genderController.text.runtimeType}");
+      kDebugPrint("type to ${dobController.text.runtimeType}");
+      final userSettings = {
+        'height': heightController.text,
+        'gender': genderController.text,
+        'dateOfBirth': dobController.text,
+      };
+      final status = await OmronService.connectToDevice(identifier, userSettings: userSettings);
+      kDebugPrint("yes done devices: $status");
+      if (status.contains("Connected")) {
+        kDebugPrint("yes done devices2: $status");
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString("paired_device_address", identifier);
+        await prefs.setString("user_height", heightController.text);
+        await prefs.setString("user_gender", genderController.text);
+        await prefs.setString("user_dob", dobController.text);
+      }
+
+      connectionStatus.value = status;
+      if (status.contains('Connected')) {
+        isMachineReady.value = true;
+      }
+    } catch (e) {
+      connectionStatus.value = 'Connection failed: $e';
+    }
+  }
+
+  bool validateUserSettings() {
+    // Basic validation
+    final height = int.tryParse(heightController.text);
+    if (height == null || height < 10000 || height > 19950) { // Assuming 0.01 cm units, range 100.00-199.50 cm
+      Get.snackbar('Invalid Height', 'Height should be between 10000 and 19950 (e.g., 18000 for 180 cm)');
+      return false;
+    }
+    final gender = genderController.text.toLowerCase();
+    if (gender != 'male' && gender != 'female') {
+      Get.snackbar('Invalid Gender', 'Gender should be Male or Female');
+      return false;
+    }
+    final dob = dobController.text;
+    if (dob.length != 8 || int.tryParse(dob) == null) {
+      Get.snackbar('Invalid DOB', 'Date of Birth should be YYYYMMDD (e.g., 19900101)');
+      return false;
+    }
+    return true;
+  }
+
+  Future<void> promptStandOnMachine() async {
+    connectionStatus.value = 'Please stand on the machine to take a measurement.';
+  }
+
+  Future<void> transferData() async {
+    connectionStatus.value = 'Transferring data...';
+    measurementData.clear();
+    try {
+      final data = await OmronService.getData();
+      kDebugPrint("Data: $data");
+      measurementData.value = data;
+      connectionStatus.value = 'Data transfer complete.';
+    } catch (e) {
+      connectionStatus.value = 'Data transfer failed: $e';
+    }
+  }
+
+  Future<void> fetchData() async {
+    connectionStatus.value = "Waiting for device transfer mode...";
+    try {
+      final data = await OmronService.getData();
+      kDebugPrint("Data: $data");
+      measurementData.value = data;
+      connectionStatus.value = "Data transfer complete!";
+    } catch (e) {
+      kDebugPrint("Error: $e");
+      connectionStatus.value = "Data transfer failed: $e";
+    }
+  }
+}
+
+class OmronConnectScreen extends GetView<OmronController> {
+  const OmronConnectScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    Get.put(OmronController());
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Omron Connect Demo'),
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: SingleChildScrollView(
+          child: Obx(() => Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Connection Status: ${controller.connectionStatus.value}',
+                  style: const TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 20),
+              TextField(
+                controller: controller.userHashIdController,
+                decoration: const InputDecoration(labelText: 'User Hash ID'),
+              ),
+              ElevatedButton(
+                onPressed: controller.setUserHashId,
+                child: const Text('Set User Hash ID'),
+              ),
+              const SizedBox(height: 20),
+              TextField(
+                controller: controller.heightController,
+                decoration: const InputDecoration(labelText: 'User Height (e.g., 18000 for 180.00 cm)'),
+                keyboardType: TextInputType.number,
+              ),
+              TextField(
+                controller: controller.genderController,
+                decoration: const InputDecoration(labelText: 'User Gender (Male/Female)'),
+              ),
+              TextField(
+                controller: controller.dobController,
+                decoration: const InputDecoration(labelText: 'User Date of Birth (YYYYMMDD)'),
+                keyboardType: TextInputType.number,
+              ),
+              const SizedBox(height: 20),
+              ElevatedButton(
+                onPressed: controller.isScanning.value ? null : controller.startScan,
+                child: Text(controller.isScanning.value ? 'Scanning...' : 'Start Scan'),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  controller.autoConnect();
+                  kDebugPrint("Auto Scan button pressed");
+                },
+                child: Text(controller.isScanning.value ? 'Auto Scan...' : 'Auto Scan'),
+              ),
+              ElevatedButton(
+                onPressed: controller.fetchData,
+                child: const Text("Transfer Data (Device Transfer Mode)"),
+              ),
+              const SizedBox(height: 20),
+              const Text('Discovered Devices:', style: TextStyle(fontWeight: FontWeight.bold)),
+              controller.devices.isEmpty
+                  ? const Text('No devices found.')
+                  : ListView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: controller.devices.length,
+                itemBuilder: (context, index) {
+                  final device = controller.devices[index];
+                  return ListTile(
+                    title: Text(device['name'] ?? 'Unknown Device'),
+                    subtitle: Text(device['identifier'] ?? 'No Identifier'),
+                    trailing: ElevatedButton(
+                      onPressed: () => controller.connectToDevice(device['identifier']!),
+                      child: const Text('Connect'),
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 20),
+              ElevatedButton(
+                onPressed: controller.connectionStatus.value.contains('Connected') &&
+                    controller.isMachineReady.value
+                    ? controller.promptStandOnMachine
+                    : null,
+                child: const Text('Stand on Machine'),
+              ),
+              const SizedBox(height: 20),
+              ElevatedButton(
+                onPressed: controller.connectionStatus.value.contains('Please stand on the machine')
+                    ? controller.transferData
+                    : null,
+                child: const Text('Transfer Data'),
+              ),
+              const SizedBox(height: 20),
+              if (controller.measurementData.isNotEmpty) ...[
+                _buildMeasurementUI(),
+                const SizedBox(height: 20),
+                _buildDetailedMeasurementUI(),
+              ],
+              if (controller.connectionStatus.value.contains('Failed'))
+                ElevatedButton(
+                  onPressed: controller.startScan,
+                  child: const Text('Retry Scan'),
+                ),
+            ],
+          )),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMeasurementUI() {
+    if (controller.measurementData.isEmpty || controller.measurementData['vitalData'] == null) {
+      return const Text("No measurement data yet");
+    }
+
+    final vitalData = Map<String, dynamic>.from(controller.measurementData['vitalData']);
+    final weightList = vitalData['OMRONVitalDataWeightKey'] as List<dynamic>?;
+
+    if (weightList == null || weightList.isEmpty) {
+      return const Text("No weight records found");
+    }
+
+    // Get the latest record (last in the list)
+    final latest = Map<String, dynamic>.from(weightList.last);
+
+    final weight = (latest['OMRONWeightWeightKey'] as num?)?.toStringAsFixed(1) ?? "--";
+    final bmi = (latest['OMRONWeightBMIKey'] as num?)?.toStringAsFixed(1) ?? "--";
+    final visceralFat = latest['OMRONWeightVisceralFatLevelClassificationKey']?.toString() ?? "--";
+    final bodyAge = latest['OMRONWeightBodyAgeKey']?.toString() ?? "--";
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text("Your Latest Results", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 20),
+        Card(
+          child: ListTile(
+            title: const Text("Weight"),
+            trailing: Text("$weight kg", style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          ),
+        ),
+        Card(
+          child: ListTile(
+            title: const Text("BMI"),
+            trailing: Text(bmi, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          ),
+        ),
+        Card(
+          child: ListTile(
+            title: const Text("Visceral Fat Level"),
+            trailing: Text(visceralFat, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          ),
+        ),
+        Card(
+          child: ListTile(
+            title: const Text("Body Age"),
+            trailing: Text(bodyAge, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildDetailedMeasurementUI() {
+    if (controller.measurementData.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          "All Measurement Data:",
+          style: TextStyle(fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 10),
+
+        // Handle vitalData flexibly (could be Map or List)
+        if (controller.measurementData['vitalData'] is List)
+          ...(controller.measurementData['vitalData'] as List)
+              .asMap()
+              .entries
+              .map((entry) {
+            final index = entry.key;
+            final measurement = entry.value;
+            return Card(
+              margin: const EdgeInsets.symmetric(vertical: 4),
+              child: ListTile(
+                title: Text("Measurement $index"),
+                subtitle: Text(measurement.toString()),
+              ),
+            );
+          }),
+
+        if (controller.measurementData['vitalData'] is Map)
+          ...(Map<String, dynamic>.from(controller.measurementData['vitalData']))
+              .entries
+              .map((e) => Card(
+            margin: const EdgeInsets.symmetric(vertical: 4),
+            child: ListTile(
+              title: Text(e.key.toString()),
+              subtitle: Text(e.value.toString()),
+            ),
+          )),
+
+        const SizedBox(height: 20),
+        Text("Device Info: ${controller.measurementData['deviceInfo']}"),
+        Text("Device Settings: ${controller.measurementData['deviceSettings']}"),
+      ],
+    );
+  }
+}
+
+
+
